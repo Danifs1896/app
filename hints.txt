@@ -1,0 +1,12 @@
+scp main.cpp CMakeLists.txt iptv@192.168.1.156:/home/iptv/app/
+
+
+ssh pi@IP_DE_TU_PI
+cd /home/iptv/hola_mundo_hdmi/
+mkdir -p build && cd build
+cmake ..
+make
+./hola_mundo
+
+export DISPLAY=:0
+export SDL_VIDEODRIVER=kmsdrmv

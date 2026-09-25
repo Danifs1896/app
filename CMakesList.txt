@@ -1,9 +1,0 @@
-cmake_minimum_required(VERSION 3.10)
-project(MonitorTemperaturaCPU)
-
-# Configuramos el estándar de C++ a usar (C++17)
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# Indicamos que nuestro ejecutable se llamará 'hola_mundo' y se construye a partir de 'main.cpp'
-add_executable(hola_mundo main.cpp)
