@@ -1,0 +1,1 @@
+alias compilahostia='mkdir -p /home/iptv/app/build && cd /home/iptv/app/build && cmake .. && make'

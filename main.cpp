@@ -1,48 +1,79 @@
 #include <iostream>
-#include <fstream>
 #include <string>
-#include <thread>
-#include <chrono>
+#include <vector>
+#include <mutex>
+#include <cstdint>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
-#include <SDL2/SDL_syswm.h>
 #include <vlc/vlc.h>
 
+// Datos compartidos entre el hilo de VLC (decodifica) y el hilo principal (dibuja)
+struct VideoContexto {
+    std::mutex mtx;
+    std::vector<uint8_t> buffer;
+    unsigned ancho = 0;
+    unsigned alto = 0;
+    unsigned pitch = 0;
+    bool nuevoFrame = false;
+};
 
-/*Función para obtener la temperatura de la CPU */
-/*float obtenerTemperaturaCPU() {
-    std::ifstream archivo("/sys/class/thermal/thermal_zone0/temp");
-    if (!archivo.is_open()) return -1.0f;
-    std::string linea;
-    std::getline(archivo, linea);
-    archivo.close();
-    try {
-        return std::stol(linea) / 1000.0f;
-    } catch (...) {
-        return -1.0f;
-    }
-}*/
+// --- Callbacks de LibVLC (se ejecutan en hilos de VLC) ---
+
+// VLC nos pregunta en qué formato queremos los fotogramas
+static unsigned vlc_formato(void** opaque, char* chroma, unsigned* ancho, unsigned* alto,
+                            unsigned* pitches, unsigned* lines) {
+    VideoContexto* ctx = static_cast<VideoContexto*>(*opaque);
+    std::lock_guard<std::mutex> lock(ctx->mtx);
+
+    memcpy(chroma, "RV32", 4);              // 32 bits por píxel
+    ctx->ancho = *ancho;
+    ctx->alto = *alto;
+    ctx->pitch = *ancho * 4;
+    pitches[0] = ctx->pitch;
+    lines[0] = *alto;
+    ctx->buffer.assign(static_cast<size_t>(ctx->pitch) * (*alto), 0);
+    return 1;                               // un solo plano
+}
+
+// VLC va a escribir un fotograma: le damos nuestro buffer
+static void* vlc_lock(void* opaque, void** planes) {
+    VideoContexto* ctx = static_cast<VideoContexto*>(opaque);
+    ctx->mtx.lock();
+    planes[0] = ctx->buffer.data();
+    return nullptr;
+}
+
+// VLC terminó de escribir el fotograma
+static void vlc_unlock(void* opaque, void* /*picture*/, void* const* /*planes*/) {
+    VideoContexto* ctx = static_cast<VideoContexto*>(opaque);
+    ctx->nuevoFrame = true;
+    ctx->mtx.unlock();
+}
+
+// VLC pide mostrar el fotograma: lo dibuja el hilo principal, aquí no hacemos nada
+static void vlc_display(void* /*opaque*/, void* /*picture*/) {}
 
 int main(int argc, char* argv[]) {
-    // 1. Inicializar SDL2 para vídeo
+    // Si no se indica driver por entorno, usar KMSDRM
+    SDL_SetHint(SDL_HINT_VIDEODRIVER, "kmsdrm");
+
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
         std::cerr << "[ERROR] No se pudo inicializar SDL: " << SDL_GetError() << std::endl;
         return 1;
     }
-    
-    // Inicializar el subsistema de fuentes por si luego pintamos texto IPTV
+    std::cout << "Driver de vídeo: " << SDL_GetCurrentVideoDriver() << std::endl;
+
     if (TTF_Init() < 0) {
         std::cerr << "[ADVERTENCIA] No se pudo inicializar SDL_ttf" << std::endl;
     }
 
-    // 2. Crear una ventana SDL (ej: 1280x720)
+    // En KMSDRM la ventana ocupa siempre toda la pantalla
     SDL_Window* ventana = SDL_CreateWindow(
-        "IPTV Player - Raspberry Pi Zero 2W",
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        1280, 720,
-        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
+        "IPTV Player",
+        SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+        0, 0,
+        SDL_WINDOW_FULLSCREEN_DESKTOP
     );
-
     if (!ventana) {
         std::cerr << "[ERROR] No se pudo crear la ventana SDL: " << SDL_GetError() << std::endl;
         TTF_Quit();
@@ -50,61 +81,87 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // 3. Obtener el identificador nativo de la ventana e inicializar LibVLC
-    SDL_SysWMinfo wmInfo;
-    SDL_VERSION(&wmInfo.version);
+    SDL_Renderer* render = SDL_CreateRenderer(
+        ventana, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    if (!render) {
+        std::cerr << "[ERROR] No se pudo crear el renderer: " << SDL_GetError() << std::endl;
+        SDL_DestroyWindow(ventana);
+        TTF_Quit();
+        SDL_Quit();
+        return 1;
+    }
+    SDL_ShowCursor(SDL_DISABLE);
+
+    // LibVLC sin salida de vídeo propia: nos entrega los fotogramas
+    VideoContexto ctx;
+    const char* vlc_args[] = { "--no-xlib", "--quiet" };
+    libvlc_instance_t* vlc_instancia = libvlc_new(2, vlc_args);
     libvlc_media_player_t* vlc_player = nullptr;
-    libvlc_instance_t* vlc_instancia = nullptr;
 
-    if (SDL_GetWindowWMInfo(ventana, &wmInfo)) {
-        vlc_instancia = libvlc_new(0, NULL);
-        if (vlc_instancia) {
-            // URL de streaming de prueba actualizada
-            const char* url_stream = "https://www.w3schools.com/html/mov_bbb.mp4";
-            
-            libvlc_media_t* vlc_media = libvlc_media_new_location(vlc_instancia, url_stream);
-            vlc_player = libvlc_media_player_new_from_media(vlc_media);
-            libvlc_media_release(vlc_media);
+    if (vlc_instancia) {
+        const char* url_stream = "https://www.w3schools.com/html/mov_bbb.mp4";
+        libvlc_media_t* media = libvlc_media_new_location(vlc_instancia, url_stream);
+        vlc_player = libvlc_media_player_new_from_media(media);
+        libvlc_media_release(media);
 
-            // Asignar la salida de vídeo de VLC a la ventana X11 de Linux
-#if defined(SDL_VIDEO_DRIVER_X11)
-            if (wmInfo.subsystem == SDL_SYSWM_X11) {
-                libvlc_media_player_set_xwindow(vlc_player, (uint32_t)(uintptr_t)wmInfo.info.x11.window);
-            }
-#endif
-            // Iniciar reproducción
-            libvlc_media_player_play(vlc_player);
-            std::cout << "=== Reproductor IPTV con VLC iniciado correctamente ===" << std::endl;
-        }
+        libvlc_video_set_callbacks(vlc_player, vlc_lock, vlc_unlock, vlc_display, &ctx);
+        libvlc_video_set_format_callbacks(vlc_player, vlc_formato, nullptr);
+        libvlc_media_player_play(vlc_player);
+        std::cout << "=== Reproductor IPTV con VLC iniciado ===" << std::endl;
     } else {
-        std::cerr << "[ADVERTENCIA] No se pudo obtener la información de la ventana WM." << std::endl;
+        std::cerr << "[ERROR] No se pudo iniciar LibVLC" << std::endl;
     }
 
+    SDL_Texture* textura = nullptr;
+    unsigned texAncho = 0, texAlto = 0;
     bool ejecutando = true;
     SDL_Event evento;
 
-    // Bucle principal para mantener la ventana abierta y escuchar eventos
     while (ejecutando) {
         while (SDL_PollEvent(&evento)) {
-            if (evento.type == SDL_QUIT || (evento.type == SDL_KEYDOWN && evento.key.keysym.sym == SDLK_ESCAPE)) {
+            if (evento.type == SDL_QUIT ||
+                (evento.type == SDL_KEYDOWN && evento.key.keysym.sym == SDLK_ESCAPE)) {
                 ejecutando = false;
             }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        // Copiar el último fotograma de VLC a la textura
+        {
+            std::lock_guard<std::mutex> lock(ctx.mtx);
+            if (ctx.ancho > 0 && ctx.alto > 0) {
+                if (!textura || texAncho != ctx.ancho || texAlto != ctx.alto) {
+                    if (textura) SDL_DestroyTexture(textura);
+                    textura = SDL_CreateTexture(render, SDL_PIXELFORMAT_ARGB8888,
+                                                SDL_TEXTUREACCESS_STREAMING,
+                                                ctx.ancho, ctx.alto);
+                    texAncho = ctx.ancho;
+                    texAlto = ctx.alto;
+                }
+                if (textura && ctx.nuevoFrame) {
+                    SDL_UpdateTexture(textura, nullptr, ctx.buffer.data(), ctx.pitch);
+                    ctx.nuevoFrame = false;
+                }
+            }
+        }
+
+        SDL_SetRenderDrawColor(render, 0, 0, 0, 255);
+        SDL_RenderClear(render);
+        if (textura) SDL_RenderCopy(render, textura, nullptr, nullptr);
+        // Aquí se podría pintar texto con SDL_ttf encima del vídeo
+        SDL_RenderPresent(render);
     }
 
-    // 4. Limpieza de recursos
+    // Limpieza
     if (vlc_player) {
         libvlc_media_player_stop(vlc_player);
         libvlc_media_player_release(vlc_player);
     }
-    if (vlc_instancia) {
-        libvlc_release(vlc_instancia);
-    }
+    if (vlc_instancia) libvlc_release(vlc_instancia);
 
-    TTF_Quit();
+    if (textura) SDL_DestroyTexture(textura);
+    SDL_DestroyRenderer(render);
     SDL_DestroyWindow(ventana);
+    TTF_Quit();
     SDL_Quit();
-
     return 0;
 }
