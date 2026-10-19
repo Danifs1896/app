@@ -12,10 +12,10 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBVLC REQUIRED libvlc)
 
 # Crear ejecutable
-add_executable(hola_mundo main.cpp)
+add_executable(iptv_main main.cpp)
 
 # Enlazar las librerías utilizando tanto los objetivos como las variables estándar
-target_link_libraries(hola_mundo PRIVATE 
+target_link_libraries(iptv_main PRIVATE 
     Threads::Threads 
     SDL2::SDL2 
     SDL2_ttf::SDL2_ttf
@@ -23,7 +23,7 @@ target_link_libraries(hola_mundo PRIVATE
 )
 
 # Incluir los directorios de cabeceras
-target_include_directories(hola_mundo PRIVATE 
+target_include_directories(iptv_main PRIVATE 
     ${SDL2_INCLUDE_DIRS} 
     ${SDL2_TTF_INCLUDE_DIRS}
     ${LIBVLC_INCLUDE_DIRS}

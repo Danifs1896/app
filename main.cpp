@@ -59,7 +59,7 @@ int main(int argc, char* argv[]) {
     if (SDL_GetWindowWMInfo(ventana, &wmInfo)) {
         vlc_instancia = libvlc_new(0, NULL);
         if (vlc_instancia) {
-            // URL de streaming "dummy" de prueba (Big Buck Bunny)
+            // URL de streaming de prueba actualizada
             const char* url_stream = "https://www.w3schools.com/html/mov_bbb.mp4";
             
             libvlc_media_t* vlc_media = libvlc_media_new_location(vlc_instancia, url_stream);
@@ -79,4 +79,32 @@ int main(int argc, char* argv[]) {
     } else {
         std::cerr << "[ADVERTENCIA] No se pudo obtener la información de la ventana WM." << std::endl;
     }
+
+    bool ejecutando = true;
+    SDL_Event evento;
+
+    // Bucle principal para mantener la ventana abierta y escuchar eventos
+    while (ejecutando) {
+        while (SDL_PollEvent(&evento)) {
+            if (evento.type == SDL_QUIT || (evento.type == SDL_KEYDOWN && evento.key.keysym.sym == SDLK_ESCAPE)) {
+                ejecutando = false;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    // 4. Limpieza de recursos
+    if (vlc_player) {
+        libvlc_media_player_stop(vlc_player);
+        libvlc_media_player_release(vlc_player);
+    }
+    if (vlc_instancia) {
+        libvlc_release(vlc_instancia);
+    }
+
+    TTF_Quit();
+    SDL_DestroyWindow(ventana);
+    SDL_Quit();
+
+    return 0;
 }
